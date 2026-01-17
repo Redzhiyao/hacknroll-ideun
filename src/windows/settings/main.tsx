@@ -18,7 +18,6 @@ async function requestCameraPermission(): Promise<boolean> {
       video: { facingMode: "user" },
       audio: false,
     });
-    // Immediately stop; this is just to trigger OS/browser permission cleanly
     stream.getTracks().forEach((t) => t.stop());
     return true;
   } catch {
@@ -145,8 +144,8 @@ function App() {
               <div style={{ fontSize: 12, opacity: 0.7 }}>Blink sensitivity</div>
               <input
                 type="range"
-                min={0.5}
-                max={0.85}
+                min={0.45}
+                max={0.80}
                 step={0.01}
                 value={s.blinkClosedRatio}
                 onChange={(e) => setSettings({ blinkClosedRatio: Number(e.target.value) })}
@@ -157,15 +156,13 @@ function App() {
               </div>
             </div>
 
-            {camMsg && (
-              <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>{camMsg}</div>
-            )}
+            {camMsg && <div style={{ marginTop: 10, fontSize: 12, opacity: 0.85 }}>{camMsg}</div>}
           </div>
         </div>
       )}
 
       <div style={{ marginTop: 16, fontSize: 12, opacity: 0.7 }}>
-        Tip: If the camera prompt didn’t show, click this window and toggle the camera setting again.
+        Tip: If you get false blinks, increase the ratio a bit. If it misses blinks, lower it.
       </div>
     </div>
   );

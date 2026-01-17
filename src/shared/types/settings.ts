@@ -1,27 +1,34 @@
-export type IdeunCharacterId = "angel-normal-a";
+// C:\Users\User\Downloads\ideun v1\src\shared\types\settings.ts
+export type IdeunCharacterId = "angel-normal-a" | "yaong-normal-a";
 
 export type IdeunSettings = {
-  onboardingDone: boolean;
-  movementEnabled: boolean;
+  enabled: boolean;
   characterId: IdeunCharacterId;
-  overlayClickThrough: boolean;
 
-  // Reminder logic
+  overlayClickThrough: boolean;
+  movementEnabled: boolean;
+  onboardingDone: boolean;
+
   remindAfterMs: number;
 
-  // ✅ Real blink tracking
   cameraEnabled: boolean;
-  blinkClosedRatio: number; // lower = more sensitive (detects "closed" easier)
+  blinkClosedRatio: number;
+
+  calibrateToken: number;
 };
 
 export const DEFAULT_SETTINGS: IdeunSettings = {
-  onboardingDone: false,
-  movementEnabled: true,
+  enabled: true,
   characterId: "angel-normal-a",
-  overlayClickThrough: true,
 
-  remindAfterMs: 8000,
+  overlayClickThrough: false,
+  movementEnabled: true,
+  onboardingDone: false,
+
+  remindAfterMs: 9000,
 
   cameraEnabled: true,
-  blinkClosedRatio: 0.68,
+  blinkClosedRatio: 0.65,
+
+  calibrateToken: 0,
 };

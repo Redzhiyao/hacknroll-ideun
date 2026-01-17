@@ -1,5 +1,6 @@
+// C:\Users\User\Downloads\ideun v1\electron\main\index.cjs
 const path = require("path");
-const { app, BrowserWindow, screen, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, screen } = require("electron");
 
 const isDev = !app.isPackaged;
 
@@ -11,94 +12,176 @@ function getProdUrl(page) {
   return `file://${path.join(__dirname, "..", "..", "dist", page)}`;
 }
 
-function createSettingsWindow() {
+const PRELOAD = path.join(__dirname, "..", "preload", "index.cjs");
+
+let launcherWin = null;
+let settingsWin = null;
+let overlayWin = null;
+let characterSelectWin = null;
+
+function createWindow({ page, width, height, resizable = false, title }) {
   const win = new BrowserWindow({
-    width: 420,
-    height: 640,
-    resizable: false,
-    title: "Ideun Settings",
+    width,
+    height,
+    resizable,
+    title,
     webPreferences: {
-      preload: path.join(__dirname, "..", "preload", "index.cjs"),
+      preload: PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  const url = isDev ? getDevUrl("settings.html") : getProdUrl("settings.html");
+  const url = isDev ? getDevUrl(page) : getProdUrl(page);
   win.loadURL(url);
 
+  // ✅ DO NOT auto-open DevTools (you asked to remove the console popup)
+  // If you ever need it, use: View > Toggle Developer Tools
   return win;
+}
+
+function createLauncherWindow() {
+  if (launcherWin && !launcherWin.isDestroyed()) {
+    launcherWin.focus();
+    return launcherWin;
+  }
+  launcherWin = createWindow({
+    page: "launcher.html",
+    width: 420,
+    height: 640,
+    title: "Ideun Launcher",
+    resizable: false,
+  });
+  launcherWin.on("closed", () => (launcherWin = null));
+  return launcherWin;
+}
+
+function createSettingsWindow() {
+  if (settingsWin && !settingsWin.isDestroyed()) {
+    settingsWin.focus();
+    return settingsWin;
+  }
+  settingsWin = createWindow({
+    page: "settings.html",
+    width: 420,
+    height: 640,
+    title: "Ideun Settings",
+    resizable: false,
+  });
+  settingsWin.on("closed", () => (settingsWin = null));
+  return settingsWin;
 }
 
 function createOverlayWindow() {
+  if (overlayWin && !overlayWin.isDestroyed()) return overlayWin;
+
   const { workArea } = screen.getPrimaryDisplay();
 
-  const win = new BrowserWindow({
-    width: 260,
-    height: 260,
-    x: workArea.x + workArea.width - 280,
-    y: workArea.y + 40,
+  overlayWin = new BrowserWindow({
+    x: workArea.x,
+    y: workArea.y,
+    width: workArea.width,
+    height: workArea.height,
+
     frame: false,
     transparent: true,
     resizable: false,
-    movable: true,
+    movable: false,
     hasShadow: false,
-    alwaysOnTop: true,
     skipTaskbar: true,
+    alwaysOnTop: true,
+
+    // ✅ key for “overlay pet” feel
     focusable: false,
+
     webPreferences: {
-      preload: path.join(__dirname, "..", "preload", "index.cjs"),
+      preload: PRELOAD,
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
-  win.setAlwaysOnTop(true, "screen-saver");
-  win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  overlayWin.setAlwaysOnTop(true, "screen-saver");
+  overlayWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
 
-  // Default: click-through ON (we'll toggle via settings)
-  win.setIgnoreMouseEvents(true, { forward: true });
+  // ✅ Start click-through, BUT still forward mouse-move so renderer can detect hover
+  overlayWin.setIgnoreMouseEvents(true, { forward: true });
 
   const url = isDev ? getDevUrl("overlay.html") : getProdUrl("overlay.html");
-  win.loadURL(url);
+  overlayWin.loadURL(url);
 
-  return win;
+  overlayWin.on("closed", () => (overlayWin = null));
+  return overlayWin;
 }
 
-let settingsWin = null;
-let overlayWin = null;
+function createCharacterSelectWindow() {
+  if (characterSelectWin && !characterSelectWin.isDestroyed()) {
+    characterSelectWin.focus();
+    return characterSelectWin;
+  }
+
+  characterSelectWin = createWindow({
+    page: "character-select.html",
+    width: 520,
+    height: 860,
+    title: "Choose Character",
+    resizable: false,
+  });
+
+  characterSelectWin.on("closed", () => (characterSelectWin = null));
+  return characterSelectWin;
+}
+
+/* ---------------- IPC ---------------- */
+
+ipcMain.handle("ideun:openSettings", () => {
+  createSettingsWindow();
+});
+
+ipcMain.handle("ideun:openCharacterSelect", () => {
+  createCharacterSelectWindow();
+});
+
+ipcMain.handle("ideun:closeCharacterSelect", () => {
+  if (characterSelectWin && !characterSelectWin.isDestroyed()) {
+    characterSelectWin.close();
+  }
+});
+
+// ✅ Renderer -> Main: toggle overlay click-through
+ipcMain.on("ideun:overlay:setIgnoreMouse", (_event, ignore) => {
+  if (!overlayWin || overlayWin.isDestroyed()) return;
+
+  if (ignore) {
+    overlayWin.setIgnoreMouseEvents(true, { forward: true });
+  } else {
+    overlayWin.setIgnoreMouseEvents(false);
+  }
+});
+
+// ✅ Settings broadcast (you already use this pattern)
+ipcMain.on("ideun:broadcastSettings", (_event, settings) => {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send("ideun:settingsChanged", settings);
+    }
+  }
+});
+
+/* -------------- App lifecycle -------------- */
 
 app.whenReady().then(() => {
-  settingsWin = createSettingsWindow();
-  overlayWin = createOverlayWindow();
-
-  // IPC: Toggle overlay click-through
-  ipcMain.on("overlay:setClickThrough", (_evt, { enabled }) => {
-    if (!overlayWin) return;
-    overlayWin.setIgnoreMouseEvents(!!enabled, { forward: true });
-  });
-
-  // IPC: Focus/open settings
-  ipcMain.on("settings:focus", () => {
-    if (!settingsWin) return;
-    settingsWin.show();
-    settingsWin.focus();
-  });
-
-  ipcMain.on("settings:open", () => {
-    if (!settingsWin) return;
-    settingsWin.show();
-    settingsWin.focus();
-  });
+  createLauncherWindow();
+  createOverlayWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      settingsWin = createSettingsWindow();
-      overlayWin = createOverlayWindow();
+      createLauncherWindow();
+      createOverlayWindow();
     }
   });
 });
 
 app.on("window-all-closed", () => {
-  app.quit();
+  if (process.platform !== "darwin") app.quit();
 });
