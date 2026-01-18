@@ -16,14 +16,17 @@ declare global {
 
 type Mode = "normal" | "remind1" | "remind2" | "angry" | "furious";
 
-function lerp(a: number, b: number, t: number) {
-  return a + (b - a) * t;
-}
+/* ------------------------------ Math helpers ------------------------------ */
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
 function dist(ax: number, ay: number, bx: number, by: number) {
   return Math.hypot(ax - bx, ay - by);
+}
+
+function smoothStep(edge0: number, edge1: number, x: number) {
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 function getViewportSize() {
@@ -41,11 +44,24 @@ function getViewportSize() {
   return { w, h };
 }
 
-// EAR indices
+function moveToward(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  maxStep: number
+) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= 0.00001) return { x: to.x, y: to.y, done: true };
+  if (d <= maxStep) return { x: to.x, y: to.y, done: true };
+  const k = maxStep / d;
+  return { x: from.x + dx * k, y: from.y + dy * k, done: false };
+}
+
+/* ------------------------------ Blink helpers ----------------------------- */
 const LEFT_EYE = { p1: 33, p2: 160, p3: 158, p4: 133, p5: 153, p6: 144 };
 const RIGHT_EYE = { p1: 362, p2: 385, p3: 387, p4: 263, p5: 373, p6: 380 };
 
-// Pose indices
 const NOSE_TIP = 1;
 const NOSE_BRIDGE = 6;
 const LEFT_EYE_INNER = 133;
@@ -105,7 +121,7 @@ function normalizeEAR(rawEAR: number, pitch: number, yaw: number): number {
 
 class EARSmoother {
   private history: number[] = [];
-  private maxHistory = 5;
+  private maxHistory = 6;
 
   add(value: number): number {
     this.history.push(value);
@@ -126,10 +142,124 @@ class EARSmoother {
   }
 }
 
+/* --------------------------- Click-through helpers ------------------------ */
 function rectContains(r: DOMRect, x: number, y: number) {
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
+/* ------------------------------ RAF utilities ----------------------------- */
+function useRafLoop(enabled: boolean, onFrame: (dt: number, now: number) => void) {
+  const cbRef = React.useRef(onFrame);
+  cbRef.current = onFrame;
+
+  React.useEffect(() => {
+    if (!enabled) return;
+
+    let raf = 0;
+    let last = performance.now();
+
+    const tick = (t: number) => {
+      raf = requestAnimationFrame(tick);
+      const dt = Math.min(0.05, Math.max(0, (t - last) / 1000));
+      last = t;
+      cbRef.current(dt, t);
+    };
+
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [enabled]);
+}
+
+function useFrameAnimation(params: {
+  fps: number;
+  framesLen: number;
+  enabled: boolean;
+  resetKey: string | number;
+}) {
+  const { fps, framesLen, enabled, resetKey } = params;
+
+  const [frameF, setFrameF] = React.useState(0);
+  const phaseRef = React.useRef(0);
+
+  React.useEffect(() => {
+    phaseRef.current = 0;
+    setFrameF(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetKey]);
+
+  useRafLoop(enabled && framesLen > 0, (dt) => {
+    phaseRef.current += dt * fps;
+    const wrapped = phaseRef.current % framesLen;
+
+    setFrameF((prev) => {
+      const a = prev;
+      const b = wrapped;
+
+      let delta = b - a;
+      if (delta > framesLen / 2) delta -= framesLen;
+      if (delta < -framesLen / 2) delta += framesLen;
+
+      const alpha = 1 - Math.pow(0.001, dt);
+      let next = a + delta * alpha;
+      next = ((next % framesLen) + framesLen) % framesLen;
+      return next;
+    });
+  });
+
+  return frameF;
+}
+
+function useSmoothScale(getTarget: () => number, mode: Mode) {
+  const [scale, setScale] = React.useState(1);
+
+  const xRef = React.useRef(1);
+  const vRef = React.useRef(0);
+
+  React.useEffect(() => {
+    xRef.current = scale;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useRafLoop(true, (dt) => {
+    const target = getTarget();
+
+    const profile =
+      mode === "furious"
+        ? { k: 160, c: 18 }
+        : mode === "angry"
+        ? { k: 120, c: 16 }
+        : mode === "remind2"
+        ? { k: 95, c: 14 }
+        : mode === "remind1"
+        ? { k: 80, c: 13 }
+        : { k: 70, c: 14 };
+
+    const x = xRef.current;
+    const v = vRef.current;
+
+    const a = profile.k * (target - x) - profile.c * v;
+
+    const v2 = v + a * dt;
+    const x2 = x + v2 * dt;
+
+    const close = Math.abs(target - x2) < 0.002 && Math.abs(v2) < 0.01;
+    if (close) {
+      xRef.current = target;
+      vRef.current = 0;
+      setScale(target);
+      return;
+    }
+
+    xRef.current = x2;
+    vRef.current = v2;
+
+    setScale((prev) => (Math.abs(prev - x2) > 0.0005 ? x2 : prev));
+  });
+
+  return scale;
+}
+
+/* ------------------------------ Overlay UI ------------------------------- */
 function Overlay() {
   const [s, setS] = React.useState(getSettings());
 
@@ -137,18 +267,19 @@ function Overlay() {
   const imgSize = 110;
 
   const [pos, setPos] = React.useState({ x: 20, y: 40 });
-  const vel = React.useRef({ x: 1.4, y: 1.1 });
+  const posRef = React.useRef({ x: 20, y: 40 });
+  const velRef = React.useRef({ x: 1.4, y: 1.1 });
 
   const [mode, setMode] = React.useState<Mode>("normal");
-
-  const [scale, setScale] = React.useState(1);
-  const targetScaleRef = React.useRef(1);
+  const modeRef = React.useRef<Mode>("normal");
+  React.useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   const lastBlinkAt = React.useRef<number>(Date.now());
   const missCount = React.useRef<number>(0);
 
   const centeredEnoughRef = React.useRef(false);
-  const scaleReadyRef = React.useRef(false);
 
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
   const streamRef = React.useRef<MediaStream | null>(null);
@@ -161,38 +292,43 @@ function Overlay() {
   const closedStartedAt = React.useRef<number>(0);
   const lastCalibrateToken = React.useRef<number>(0);
 
-  const [camStatus, setCamStatus] = React.useState<
-    "off" | "starting" | "on" | "error"
-  >("off");
+  const [camStatus, setCamStatus] = React.useState<"off" | "starting" | "on" | "error">("off");
 
-  const [remindFrame, setRemindFrame] = React.useState(0);
-  const [floatFrame, setFloatFrame] = React.useState(0);
-
+  // ✅ IMPORTANT: getPack() now normalizes, so pabo/yaong/angel always resolves correctly
   const pack = React.useMemo(() => getPack(s.characterId), [s.characterId]);
+
+  const packKeyRef = React.useRef(pack.key);
+  React.useEffect(() => {
+    packKeyRef.current = pack.key;
+  }, [pack.key]);
 
   const isFurious = mode === "furious";
 
-  // Refs to clickable zones (normal character + yaong special)
   const clickableRef = React.useRef<HTMLDivElement | null>(null);
   const yaongSpecialClickableRef = React.useRef<HTMLDivElement | null>(null);
 
-  // Track current ignore state so we don’t spam IPC
   const ignoreMouseRef = React.useRef(true);
+
+  // Pabo border crawl + remind phases
+  const paboBorderSRef = React.useRef(0);
+  const paboRemindPhaseRef = React.useRef<1 | 2>(1);
+
+  // Pabo furious shake
+  const [screenShake, setScreenShake] = React.useState({ x: 0, y: 0, r: 0 });
+  const shakeClockRef = React.useRef(0);
+  const shakeUpdateAccRef = React.useRef(0);
+  const remindIdxRef = React.useRef(0);
+  const lastVibeIdxRef = React.useRef(-1);
 
   React.useEffect(() => subscribeSettings(setS), []);
 
-  // ✅ Start click-through on mount
   React.useEffect(() => {
     ignoreMouseRef.current = true;
     window.ideun?.setOverlayIgnoreMouse?.(true);
   }, []);
 
-  // ✅ Option 1 logic: click-through always, EXCEPT when cursor is over the character
   React.useEffect(() => {
     const onMove = (e: MouseEvent) => {
-      // if user explicitly wants FULL click-through (optional)
-      // if (s.overlayClickThrough) return;
-
       const x = e.clientX;
       const y = e.clientY;
 
@@ -210,7 +346,7 @@ function Overlay() {
         if (rectContains(r, x, y)) over = true;
       }
 
-      const nextIgnore = !over; // ignore if NOT over character
+      const nextIgnore = !over;
       if (nextIgnore !== ignoreMouseRef.current) {
         ignoreMouseRef.current = nextIgnore;
         window.ideun?.setOverlayIgnoreMouse?.(nextIgnore);
@@ -219,132 +355,283 @@ function Overlay() {
 
     window.addEventListener("mousemove", onMove, { passive: true });
     return () => window.removeEventListener("mousemove", onMove);
-  }, [s.overlayClickThrough, mode, pack.key]);
-
-  React.useEffect(() => {
-    setRemindFrame(0);
-    setFloatFrame(0);
   }, [mode, pack.key]);
 
-  // normal float loop
+  const floatFrameF = useFrameAnimation({
+    fps: 2,
+    framesLen: Math.max(1, pack.floatFrames.length),
+    enabled: mode === "normal",
+    resetKey: `float:${pack.key}:${mode}`,
+  });
+
+  const reminderFps = mode === "furious" ? 6 : mode === "angry" ? 3.2 : 2.6;
+  const reminderFramesLen =
+    mode === "furious"
+      ? pack.furiousFrames?.length ?? 0
+      : mode === "angry"
+      ? pack.angryFrames.length
+      : pack.blinkFrames.length;
+
+  const paboImmediateRemind = pack.key === "pabo" && (mode === "remind1" || mode === "remind2");
+
+  const reminderFrameF = useFrameAnimation({
+    fps: reminderFps,
+    framesLen: Math.max(1, reminderFramesLen),
+    enabled:
+      mode !== "normal" &&
+      !(mode === "furious" && pack.key === "yaong") &&
+      (centeredEnoughRef.current || paboImmediateRemind),
+    resetKey: `rem:${pack.key}:${mode}:${s.remindAfterMs}`,
+  });
+
+  const targetScaleRef = React.useRef(1);
+
+  const scale = useSmoothScale(() => {
+    return modeRef.current === "normal" ? 1 : targetScaleRef.current;
+  }, mode);
+
   React.useEffect(() => {
-    if (mode !== "normal") return;
+    if (pack.key === "pabo" && (mode === "remind1" || mode === "remind2")) {
+      paboRemindPhaseRef.current = 1;
+    }
+    if (pack.key !== "pabo") {
+      setScreenShake({ x: 0, y: 0, r: 0 });
+      lastVibeIdxRef.current = -1;
+    }
+  }, [mode, pack.key]);
 
-    const fps = 2;
-    const ms = Math.floor(1000 / fps);
+  useRafLoop(true, (dt) => {
+    const nowMs = Date.now();
+    const elapsed = nowMs - lastBlinkAt.current;
 
-    const id = window.setInterval(() => {
-      setFloatFrame((f) => (f + 1) % Math.max(1, pack.floatFrames.length));
-    }, ms);
+    if (elapsed >= s.remindAfterMs) {
+      if (missCount.current === 0) {
+        missCount.current = 1;
+        setMode("remind1");
+        targetScaleRef.current = 3.6;
+      } else if (missCount.current === 1 && elapsed >= s.remindAfterMs * 2) {
+        missCount.current = 2;
+        setMode("remind2");
+        targetScaleRef.current = 6.0;
+      } else if (missCount.current === 2 && elapsed >= s.remindAfterMs * 3) {
+        missCount.current = 3;
+        setMode("angry");
+        targetScaleRef.current = 7.2;
+      } else if (missCount.current === 3 && elapsed >= s.remindAfterMs * 4) {
+        missCount.current = 4;
+        setMode("furious");
+        targetScaleRef.current = 9.2;
+      }
+    }
 
-    return () => window.clearInterval(id);
-  }, [mode, pack.key, pack.floatFrames.length]);
+    const { w, h } = getViewportSize();
+    if (!w || !h) return;
 
-  // reminder loop (skip yaong furious special)
-  React.useEffect(() => {
-    if (mode === "normal") return;
-    if (mode === "furious" && pack.key === "yaong") return;
+    const p = posRef.current;
+    const v = velRef.current;
+    const key = packKeyRef.current;
 
-    const framesLen =
-      mode === "furious"
-        ? pack.furiousFrames?.length ?? 0
-        : mode === "angry"
-        ? pack.angryFrames.length
-        : pack.blinkFrames.length;
+    if (modeRef.current === "furious" && key === "pabo" && centeredEnoughRef.current) {
+      shakeClockRef.current += dt;
+      shakeUpdateAccRef.current += dt;
 
-    const fps = mode === "furious" ? 5 : 2.5;
-    const ms = Math.floor(1000 / fps);
+      const idx = remindIdxRef.current;
+      let amp = 0;
+      let rotAmp = 0;
 
-    const id = window.setInterval(() => {
-      if (!centeredEnoughRef.current) return;
-      if (!scaleReadyRef.current) return;
-      setRemindFrame((f) => (f + 1) % Math.max(1, framesLen));
-    }, ms);
+      if (idx === 2) {
+        amp = 12;
+        rotAmp = 1.4;
+      } else if (idx === 3) {
+        amp = 18;
+        rotAmp = 2.2;
+      } else if (idx >= 4) {
+        amp = 26;
+        rotAmp = 3.0;
+      } else {
+        amp = 0;
+        rotAmp = 0;
+      }
 
-    return () => window.clearInterval(id);
-  }, [
-    mode,
-    pack.key,
-    pack.blinkFrames.length,
-    pack.angryFrames.length,
-    pack.furiousFrames?.length,
-  ]);
+      if (idx !== lastVibeIdxRef.current && idx >= 2) {
+        lastVibeIdxRef.current = idx;
+        try {
+          const vib = (navigator as any).vibrate as undefined | ((p: number | number[]) => boolean);
+          if (typeof vib === "function") {
+            if (idx === 2) vib([40, 25, 40]);
+            else if (idx === 3) vib([60, 25, 60]);
+            else vib([90, 30, 90, 30, 90]);
+          }
+        } catch {}
+      }
 
-  // movement + scaling + escalation
-  React.useEffect(() => {
-    let raf = 0;
+      if (shakeUpdateAccRef.current >= 1 / 30) {
+        shakeUpdateAccRef.current = 0;
 
-    const tick = () => {
-      raf = requestAnimationFrame(tick);
+        if (amp <= 0.1) {
+          setScreenShake((prev) =>
+            prev.x !== 0 || prev.y !== 0 || prev.r !== 0 ? { x: 0, y: 0, r: 0 } : prev
+          );
+        } else {
+          const t = shakeClockRef.current;
+          const sx =
+            (Math.sin(t * 73.1) + Math.sin(t * 109.7) + Math.sin(t * 181.3)) / 3;
+          const sy =
+            (Math.cos(t * 67.9) + Math.cos(t * 97.2) + Math.cos(t * 157.4)) / 3;
+          const sr = (Math.sin(t * 55.3) + Math.sin(t * 121.9)) / 2;
 
-      const now = Date.now();
-      const elapsed = now - lastBlinkAt.current;
+          setScreenShake({ x: sx * amp, y: sy * amp, r: sr * rotAmp });
+        }
+      }
+    } else {
+      if (screenShake.x !== 0 || screenShake.y !== 0 || screenShake.r !== 0) {
+        setScreenShake({ x: 0, y: 0, r: 0 });
+      }
+      lastVibeIdxRef.current = -1;
+    }
 
-      if (elapsed >= s.remindAfterMs) {
-        if (missCount.current === 0) {
-          missCount.current = 1;
-          setMode("remind1");
-          targetScaleRef.current = 3.6;
-        } else if (missCount.current === 1 && elapsed >= s.remindAfterMs * 2) {
-          missCount.current = 2;
-          setMode("remind2");
-          targetScaleRef.current = 6.0;
-        } else if (missCount.current === 2 && elapsed >= s.remindAfterMs * 3) {
-          missCount.current = 3;
-          setMode("angry");
-          targetScaleRef.current = 7.2;
-        } else if (missCount.current === 3 && elapsed >= s.remindAfterMs * 4) {
-          missCount.current = 4;
-          setMode("furious");
-          targetScaleRef.current = 9.2;
+    if (modeRef.current === "normal") {
+      centeredEnoughRef.current = false;
+      if (!s.movementEnabled) return;
+
+      if (key === "pabo") {
+        const margin = 6;
+        const minX = margin;
+        const minY = margin;
+        const maxX = Math.max(minX, w - baseSize - margin);
+        const maxY = Math.max(minY, h - baseSize - margin);
+
+        const width = Math.max(0, maxX - minX);
+        const height = Math.max(0, maxY - minY);
+        const perim = 2 * (width + height);
+        if (perim < 1) return;
+
+        const crawlSpeed = 260;
+        paboBorderSRef.current = (paboBorderSRef.current + crawlSpeed * dt) % perim;
+
+        const s0 = paboBorderSRef.current;
+        let nx = minX;
+        let ny = minY;
+
+        if (s0 < width) {
+          nx = minX + s0;
+          ny = minY;
+        } else if (s0 < width + height) {
+          nx = maxX;
+          ny = minY + (s0 - width);
+        } else if (s0 < 2 * width + height) {
+          nx = maxX - (s0 - (width + height));
+          ny = maxY;
+        } else {
+          nx = minX;
+          ny = maxY - (s0 - (2 * width + height));
+        }
+
+        const smooth = 1 - Math.pow(0.0008, dt);
+        const sx = p.x + (nx - p.x) * smooth;
+        const sy = p.y + (ny - p.y) * smooth;
+
+        posRef.current = { x: sx, y: sy };
+        setPos((prev) =>
+          Math.abs(prev.x - sx) + Math.abs(prev.y - sy) > 0.25 ? { x: sx, y: sy } : prev
+        );
+        return;
+      }
+
+      const step = dt * 60;
+      let nx = p.x + v.x * step;
+      let ny = p.y + v.y * step;
+
+      let bounced = false;
+      if (nx < 0 || nx > w - baseSize) {
+        v.x *= -1;
+        bounced = true;
+      }
+      if (ny < 0 || ny > h - baseSize) {
+        v.y *= -1;
+        bounced = true;
+      }
+
+      if (bounced) {
+        const jitter = 0.08;
+        const jx = 1 + (Math.random() * 2 - 1) * jitter;
+        const jy = 1 + (Math.random() * 2 - 1) * jitter;
+        v.x *= jx;
+        v.y *= jy;
+
+        v.x = clamp(v.x, -2.3, 2.3);
+        v.y = clamp(v.y, -2.0, 2.0);
+      }
+
+      nx = clamp(nx, 0, w - baseSize);
+      ny = clamp(ny, 0, h - baseSize);
+
+      const smooth = 1 - Math.pow(0.0008, dt);
+      const sx = p.x + (nx - p.x) * smooth;
+      const sy = p.y + (ny - p.y) * smooth;
+
+      posRef.current = { x: sx, y: sy };
+      setPos((prev) =>
+        Math.abs(prev.x - sx) + Math.abs(prev.y - sy) > 0.25 ? { x: sx, y: sy } : prev
+      );
+    } else {
+      if (key === "pabo" && (modeRef.current === "remind1" || modeRef.current === "remind2")) {
+        centeredEnoughRef.current = false;
+
+        const cx = (w - baseSize) / 2;
+        const cy = (h - baseSize) / 2;
+
+        const bottomMargin = 10;
+        const bottomMid = { x: cx, y: Math.max(0, h - baseSize - bottomMargin) };
+        const center = { x: cx, y: cy };
+
+        const phase = paboRemindPhaseRef.current;
+
+        const runSpeed = modeRef.current === "remind2" ? 980 : 840;
+        const riseSpeed = modeRef.current === "remind2" ? 760 : 640;
+
+        if (phase === 1) {
+          const res = moveToward(p, bottomMid, runSpeed * dt);
+          posRef.current = { x: res.x, y: res.y };
+          setPos((prev) =>
+            Math.abs(prev.x - res.x) + Math.abs(prev.y - res.y) > 0.25 ? { x: res.x, y: res.y } : prev
+          );
+          if (res.done) paboRemindPhaseRef.current = 2;
+          return;
+        } else {
+          const res = moveToward(p, center, riseSpeed * dt);
+          const d = dist(res.x, res.y, center.x, center.y);
+          centeredEnoughRef.current = d < 6;
+
+          posRef.current = { x: res.x, y: res.y };
+          setPos((prev) =>
+            Math.abs(prev.x - res.x) + Math.abs(prev.y - res.y) > 0.25 ? { x: res.x, y: res.y } : prev
+          );
+          return;
         }
       }
 
-      setScale((cur) => {
-        const target = mode === "normal" ? 1 : targetScaleRef.current;
-        const speed = mode === "furious" ? 0.06 : 0.04;
-        const next = lerp(cur, target, speed);
-        scaleReadyRef.current = Math.abs(next - target) < 0.04;
-        return next;
-      });
+      const cx = (w - baseSize) / 2;
+      const cy = (h - baseSize) / 2;
 
-      setPos((p) => {
-        const { w, h } = getViewportSize();
-        if (!w || !h) return p;
+      const speed = modeRef.current === "furious" ? 0.9 : modeRef.current === "angry" ? 0.75 : 0.65;
 
-        if (mode === "normal") {
-          centeredEnoughRef.current = false;
-          if (!s.movementEnabled) return p;
+      const t = 1 - Math.exp(-speed * 7 * dt);
+      const shaped = smoothStep(0, 1, t);
 
-          let nx = p.x + vel.current.x;
-          let ny = p.y + vel.current.y;
+      const nx = p.x + (cx - p.x) * shaped;
+      const ny = p.y + (cy - p.y) * shaped;
 
-          if (nx < 0 || nx > w - baseSize) vel.current.x *= -1;
-          if (ny < 0 || ny > h - baseSize) vel.current.y *= -1;
+      const d = dist(nx, ny, cx, cy);
+      centeredEnoughRef.current = d < 6;
 
-          nx = clamp(nx, 0, w - baseSize);
-          ny = clamp(ny, 0, h - baseSize);
-          return { x: nx, y: ny };
-        } else {
-          const cx = (w - baseSize) / 2;
-          const cy = (h - baseSize) / 2;
+      posRef.current = { x: nx, y: ny };
+      setPos((prev) =>
+        Math.abs(prev.x - nx) + Math.abs(prev.y - ny) > 0.25 ? { x: nx, y: ny } : prev
+      );
+    }
+  });
 
-          const flySpeed = mode === "furious" ? 0.03 : 0.022;
-          const nx = lerp(p.x, cx, flySpeed);
-          const ny = lerp(p.y, cy, flySpeed);
-
-          const d = dist(nx, ny, cx, cy);
-          centeredEnoughRef.current = d < 8;
-          return { x: nx, y: ny };
-        }
-      });
-    };
-
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [s.movementEnabled, s.remindAfterMs, mode]);
-
-  // camera + blink detection
   React.useEffect(() => {
     const start = async () => {
       if (!s.cameraEnabled) {
@@ -438,8 +725,7 @@ function Overlay() {
           const base = baselineEar.current;
           if (base == null) baselineEar.current = smoothedEAR;
           else {
-            if (smoothedEAR > base)
-              baselineEar.current = base * 0.85 + smoothedEAR * 0.15;
+            if (smoothedEAR > base) baselineEar.current = base * 0.85 + smoothedEAR * 0.15;
             else baselineEar.current = base * 0.98 + smoothedEAR * 0.02;
           }
 
@@ -454,8 +740,7 @@ function Overlay() {
           }
 
           const openThreshold = baseline * (s.blinkClosedRatio + 0.15);
-          const openAgain =
-            eyeClosed.current && !closedNow && smoothedEAR > openThreshold;
+          const openAgain = eyeClosed.current && !closedNow && smoothedEAR > openThreshold;
 
           if (openAgain) {
             const dur = now - closedStartedAt.current;
@@ -464,6 +749,7 @@ function Overlay() {
               missCount.current = 0;
               setMode("normal");
               targetScaleRef.current = 1;
+              paboRemindPhaseRef.current = 1;
             }
             eyeClosed.current = false;
             closedStartedAt.current = 0;
@@ -502,6 +788,29 @@ function Overlay() {
     return () => stop();
   }, [s.cameraEnabled, s.blinkClosedRatio, s.calibrateToken]);
 
+  const floatFrames = pack.floatFrames;
+  const blinkFrames = pack.blinkFrames;
+  const angryFrames = pack.angryFrames;
+  const furiousFrames = pack.furiousFrames ?? [];
+
+  const reminderFrames = mode === "furious" ? furiousFrames : mode === "angry" ? angryFrames : blinkFrames;
+
+  const floatIdx = Math.floor(floatFrameF) % Math.max(1, floatFrames.length);
+  const remindIdx = Math.floor(reminderFrameF) % Math.max(1, reminderFrames.length);
+
+  React.useEffect(() => {
+    remindIdxRef.current = remindIdx;
+  }, [remindIdx]);
+
+  const shouldAnimateReminders =
+    mode !== "normal" &&
+    (centeredEnoughRef.current || paboImmediateRemind) &&
+    !(mode === "furious" && pack.key === "yaong");
+
+  const normalImgSrc = floatFrames[floatIdx];
+  const reminderImgSrc = shouldAnimateReminders ? reminderFrames[remindIdx] : reminderFrames[0];
+  const imgSrc = mode === "normal" ? normalImgSrc : reminderImgSrc;
+
   const label =
     mode === "normal"
       ? "Ideun overlay"
@@ -513,71 +822,66 @@ function Overlay() {
       ? "ANGRY 😡 BLINK!!!"
       : "FURIOUS 🤬 BLINK!!!";
 
-  const shouldAnimateReminders =
-    mode !== "normal" && centeredEnoughRef.current && scaleReadyRef.current;
+  const isYaongFuriousSpecial = mode === "furious" && pack.key === "yaong" && !!pack.furiousSpecial;
 
-  const floatFrames = pack.floatFrames;
-  const blinkFrames = pack.blinkFrames;
-  const angryFrames = pack.angryFrames;
-  const furiousFrames = pack.furiousFrames ?? [];
+  const paboFuriousExtraScale =
+    mode === "furious" && pack.key === "pabo"
+      ? remindIdx === 1
+        ? 1.06
+        : remindIdx === 2
+        ? 1.08
+        : remindIdx === 3
+        ? 1.1
+        : remindIdx >= 4
+        ? 1.12
+        : 1
+      : 1;
 
-  const reminderFrames =
-    mode === "furious" ? furiousFrames : mode === "angry" ? angryFrames : blinkFrames;
-
-  const normalImgSrc = floatFrames[floatFrame % Math.max(1, floatFrames.length)];
-  const reminderImgSrc = shouldAnimateReminders
-    ? reminderFrames[remindFrame % Math.max(1, reminderFrames.length)]
-    : reminderFrames[0];
-
-  const imgSrc = mode === "normal" ? normalImgSrc : reminderImgSrc;
-
-  const isYaongFuriousSpecial =
-    mode === "furious" && pack.key === "yaong" && !!pack.furiousSpecial;
+  const filterTransition = "filter 300ms ease-out";
+  const usePaboScreenShake = isFurious && pack.key === "pabo" && !isYaongFuriousSpecial;
 
   return (
-    <div
-      style={{
-        width: "100vw",
-        height: "100vh",
-        background: "transparent",
-        overflow: "hidden",
-        pointerEvents: "none", // ✅ DOM click-through by default
-      }}
-    >
+    <div style={{ width: "100vw", height: "100vh", background: "transparent", overflow: "hidden", pointerEvents: "none" }}>
       <style>{`
-        html, body, #root {
-          background: transparent !important;
-          margin: 0;
-          padding: 0;
-          overflow: hidden;
-        }
+        html, body, #root { background: transparent !important; margin: 0; padding: 0; overflow: hidden; }
+        .smooth-character { image-rendering: pixelated; transform: translateZ(0); backface-visibility: hidden; will-change: transform, filter, opacity; }
 
         @keyframes ideunPulse {
-          0% { opacity: 0.45; transform: scale(1); }
-          50% { opacity: 0.80; transform: scale(1.03); }
-          100% { opacity: 0.45; transform: scale(1); }
+          0% { opacity: 0.42; transform: scale(1); }
+          40% { opacity: 0.82; transform: scale(1.04); }
+          100% { opacity: 0.42; transform: scale(1); }
         }
+
         @keyframes ideunShakeHard {
-          0% { transform: translate(0px, 0px) rotate(0deg); }
-          15% { transform: translate(-4px, 2px) rotate(-0.5deg); }
-          30% { transform: translate(4px, -2px) rotate(0.5deg); }
-          45% { transform: translate(-4px, -2px) rotate(-0.5deg); }
-          60% { transform: translate(4px, 2px) rotate(0.5deg); }
-          75% { transform: translate(-3px, 1px) rotate(-0.3deg); }
+          0%   { transform: translate(0px, 0px) rotate(0deg); }
+          10%  { transform: translate(-6px, 3px) rotate(-0.8deg); }
+          20%  { transform: translate(6px, -4px) rotate(0.9deg); }
+          30%  { transform: translate(-7px, -3px) rotate(-0.7deg); }
+          40%  { transform: translate(7px, 4px) rotate(0.8deg); }
+          50%  { transform: translate(-6px, 2px) rotate(-0.6deg); }
+          60%  { transform: translate(6px, -3px) rotate(0.6deg); }
+          70%  { transform: translate(-5px, -2px) rotate(-0.5deg); }
+          80%  { transform: translate(5px, 3px) rotate(0.5deg); }
+          90%  { transform: translate(-3px, 1px) rotate(-0.3deg); }
           100% { transform: translate(0px, 0px) rotate(0deg); }
         }
-        @keyframes ideunScan {
-          0% { background-position: 0% 0%; }
-          100% { background-position: 0% 100%; }
+
+        @keyframes ideunScan { 0% { background-position: 0% 0%; } 100% { background-position: 0% 100%; } }
+
+        @keyframes yaongPawsDropAndLand {
+          0%   { transform: translate(-50%, -150%); opacity: 0; }
+          10%  { opacity: 1; }
+          55%  { transform: translate(-50%, 0%); }
+          70%  { transform: translate(-50%, 10%); }
+          82%  { transform: translate(-50%, -2%); }
+          92%  { transform: translate(-50%, 3%); }
+          100% { transform: translate(-50%, 0%); opacity: 1; }
         }
-        @keyframes yaongPawsDrop {
-          0% { transform: translate(-50%, -120%); opacity: 0; }
-          10% { opacity: 1; }
-          100% { transform: translate(-50%, 120%); opacity: 1; }
-        }
+
         @keyframes yaongRiseUp {
-          0% { transform: translate(-50%, 160%); opacity: 0; }
-          25% { opacity: 1; }
+          0%   { transform: translate(-50%, 170%); opacity: 0; }
+          30%  { opacity: 1; }
+          70%  { transform: translate(-50%, -6%); }
           100% { transform: translate(-50%, 0%); opacity: 1; }
         }
       `}</style>
@@ -592,7 +896,8 @@ function Overlay() {
             background:
               "radial-gradient(circle at 50% 45%, rgba(255,0,0,0.35), rgba(0,0,0,0.92) 60%), " +
               "linear-gradient(180deg, rgba(255,0,0,0.16), rgba(0,0,0,0.92))",
-            animation: "ideunPulse 900ms ease-in-out infinite",
+            animation: "ideunPulse 900ms cubic-bezier(.2,.9,.2,1) infinite",
+            willChange: "opacity, transform",
           }}
         >
           <div
@@ -605,6 +910,7 @@ function Overlay() {
               opacity: 0.22,
               mixBlendMode: "overlay",
               animation: "ideunScan 700ms linear infinite",
+              willChange: "background-position, opacity",
             }}
           />
         </div>
@@ -616,7 +922,11 @@ function Overlay() {
           inset: 0,
           pointerEvents: "none",
           zIndex: 1,
-          animation: isFurious ? "ideunShakeHard 110ms linear infinite" : undefined,
+          animation: isFurious && !usePaboScreenShake ? "ideunShakeHard 120ms linear infinite" : undefined,
+          transform: usePaboScreenShake
+            ? `translate(${screenShake.x}px, ${screenShake.y}px) rotate(${screenShake.r}deg)`
+            : undefined,
+          willChange: isFurious ? "transform" : undefined,
         }}
       >
         {isYaongFuriousSpecial && pack.furiousSpecial ? (
@@ -625,14 +935,14 @@ function Overlay() {
               src={pack.furiousSpecial.paws}
               alt="yaong-paws"
               draggable={false}
+              className="smooth-character"
               style={{
                 position: "fixed",
                 left: "50%",
-                top: 0,
-                width: "min(720px, 92vw)",
-                transform: "translate(-50%, -120%)",
-                animation: "yaongPawsDrop 900ms cubic-bezier(.2,.9,.2,1) infinite",
-                imageRendering: "pixelated",
+                bottom: 0,
+                width: "min(860px, 98vw)",
+                transform: "translate(-50%, -150%)",
+                animation: "yaongPawsDropAndLand 950ms cubic-bezier(.16,.92,.22,1) forwards",
                 userSelect: "none",
                 WebkitUserDrag: "none",
                 pointerEvents: "none",
@@ -645,15 +955,16 @@ function Overlay() {
               style={{
                 position: "fixed",
                 left: "50%",
-                bottom: "10%",
-                width: "min(520px, 72vw)",
-                transform: "translate(-50%, 160%)",
-                animation: "yaongRiseUp 520ms cubic-bezier(.2,.9,.2,1) forwards",
+                bottom: "8%",
+                width: "min(640px, 86vw)",
+                transform: "translate(-50%, 170%)",
+                animation: "yaongRiseUp 560ms cubic-bezier(.18,.92,.22,1) forwards",
                 cursor: "pointer",
-                pointerEvents: "auto", // ✅ clickable area
+                pointerEvents: "auto",
                 display: "grid",
                 placeItems: "center",
                 userSelect: "none",
+                willChange: "transform, opacity",
               }}
               title={`${label} • camera: ${camStatus}`}
             >
@@ -661,12 +972,13 @@ function Overlay() {
                 src={pack.furiousSpecial.furious}
                 alt="yaong-furious"
                 draggable={false}
+                className="smooth-character"
                 style={{
                   width: "100%",
                   height: "auto",
                   objectFit: "contain",
-                  imageRendering: "pixelated",
-                  filter: "drop-shadow(0 0 22px rgba(255,0,0,0.35))",
+                  filter: "drop-shadow(0 0 26px rgba(255,0,0,0.38))",
+                  transition: filterTransition,
                   userSelect: "none",
                   WebkitUserDrag: "none",
                 }}
@@ -687,17 +999,12 @@ function Overlay() {
               placeItems: "center",
               userSelect: "none",
               cursor: "pointer",
-
-              // ✅ only this area is intended to be interactive
               pointerEvents: "auto",
-
-              transform: `scale(${scale})`,
+              transform: `translateZ(0) scale(${scale * paboFuriousExtraScale})`,
               transformOrigin: "center center",
-              transition: "transform 160ms ease",
-
+              willChange: "transform",
               background: "transparent",
               border: "none",
-
               boxShadow:
                 mode === "normal"
                   ? "none"
@@ -711,12 +1018,13 @@ function Overlay() {
               src={imgSrc}
               alt={`${mode}-${pack.key}`}
               draggable={false}
+              className="smooth-character"
               style={{
                 width: imgSize,
                 height: imgSize,
                 objectFit: "contain",
-                imageRendering: "pixelated",
                 filter: isFurious ? "drop-shadow(0 0 18px rgba(255,0,0,0.35))" : undefined,
+                transition: filterTransition,
               }}
             />
           </div>
@@ -736,6 +1044,8 @@ function Overlay() {
           color: "white",
           pointerEvents: "none",
           zIndex: 3,
+          transform: "translateZ(0)",
+          backfaceVisibility: "hidden",
         }}
       >
         cam: {camStatus} • char: {pack.key}

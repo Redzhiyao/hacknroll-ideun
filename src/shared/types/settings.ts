@@ -1,5 +1,7 @@
 // C:\Users\User\Downloads\ideun v1\src\shared\types\settings.ts
-export type IdeunCharacterId = "angel-normal-a" | "yaong-normal-a";
+
+// ✅ Added "pabo-normal-a"
+export type IdeunCharacterId = "angel-normal-a" | "yaong-normal-a" | "pabo-normal-a";
 
 export type IdeunSettings = {
   enabled: boolean;

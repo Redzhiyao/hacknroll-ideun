@@ -15,13 +15,22 @@ declare global {
 }
 
 const KEY = "ideun_settings_v1";
-const VALID_CHARACTERS: IdeunCharacterId[] = ["angel-normal-a", "yaong-normal-a"];
+
+// ✅ Added "pabo-normal-a"
+const VALID_CHARACTERS: IdeunCharacterId[] = [
+  "angel-normal-a",
+  "yaong-normal-a",
+  "pabo-normal-a"
+];
 
 function normalizeSettings(s: Partial<IdeunSettings>): IdeunSettings {
   const merged: IdeunSettings = { ...DEFAULT_SETTINGS, ...s } as IdeunSettings;
 
   if (!VALID_CHARACTERS.includes(merged.characterId)) {
+    console.warn("⚠️ Invalid characterId:", merged.characterId, "defaulting to:", DEFAULT_SETTINGS.characterId);
     merged.characterId = DEFAULT_SETTINGS.characterId;
+  } else {
+    console.log("✅ Valid characterId:", merged.characterId);
   }
 
   merged.enabled = !!merged.enabled;
@@ -61,7 +70,9 @@ export function getSettings(): IdeunSettings {
 }
 
 export async function setSettings(next: Partial<IdeunSettings>) {
+  console.log("💾 setSettings called with:", next);
   const merged = normalizeSettings({ ...getSettings(), ...next });
+  console.log("💾 After normalization:", merged);
 
   localStorage.setItem(KEY, JSON.stringify(merged));
 
