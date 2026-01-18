@@ -1,73 +1,63 @@
-# React + TypeScript + Vite
+# Ideun — Blink Tracker Pet (Desktop Overlay)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Ideun is a lightweight desktop app that helps you blink more while using your computer. It tracks your blink behaviour locally (webcam-based) and displays an always-on-top “pet” overlay that gently reminds you when you haven’t blinked for too long.
 
-Currently, two official plugins are available:
+The pet has different moods/animations depending on how long it has been since your last blink. You can also switch between characters (Angel / Yaong) in Character Select / Settings.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Key Features
 
-## React Compiler
+- Local blink tracking (webcam-based; runs on-device)
+- Transparent always-on-top pet overlay across your screen
+- Floating pet movement (optional) + click-to-open settings
+- Reminder escalation states:
+  - normal → remind1 → remind2 → angry → furious
+- Character selection (Angel / Yaong)
+- Configurable settings:
+  - “No blink” reminder threshold (`remindAfterMs`)
+  - Blink detection sensitivity (`blinkClosedRatio`)
+  - Movement toggle (movementEnabled)
+  - Camera toggle (cameraEnabled)
+  - Calibration trigger (calibrateToken)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Privacy
 
-## Expanding the ESLint configuration
+- Camera access is used only for blink detection
+- Processing happens locally on your machine
+- No video is uploaded or stored
+- Ideun does not collect personal data
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## Tech Stack
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- Electron (desktop app, multiple windows)
+- Vite + React + TypeScript (UI + overlay rendering)
+- MediaPipe Tasks Vision (FaceLandmarker) for blink detection
+- Local settings store shared across windows (Launcher / Settings / Character Select / Overlay)
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Project Structure (High-level)
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+- `electron/`
+  - Electron main process: creates windows (launcher, settings, character select, overlay)
+  - IPC: opens windows + broadcasts settings updates
+- `src/windows/launcher/`
+  - Launcher UI (entry point)
+- `src/windows/characterSelect/`
+  - Character selection UI
+- `src/windows/settings/`
+  - Settings UI (camera, movement, thresholds, calibration)
+- `src/windows/overlay/`
+  - Full-screen transparent overlay that renders the pet + animations
+  - Blink detection loop + reminder escalation logic
+- `src/shared/store/`
+  - Shared settings store + subscribe/get helpers
+- `src/shared/characters/`
+  - Character packs + frame lists (`getPack(characterId)`)
+- `public/characters/`
+  - Character sprite assets (Angel / Yaong, including special furious assets)
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+## How to Run (Local Development)
+npm run dev:app
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+### 1) Install dependencies
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+```bash
+npm install
