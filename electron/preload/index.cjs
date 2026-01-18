@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // C:\Users\User\Downloads\ideun v1\electron\preload\index.cjs
 const { contextBridge, ipcRenderer } = require("electron");
 
@@ -20,4 +21,13 @@ contextBridge.exposeInMainWorld("ideun", {
     ipcRenderer.on("ideun:settingsChanged", handler);
     return () => ipcRenderer.removeListener("ideun:settingsChanged", handler);
   },
+=======
+const { contextBridge, ipcRenderer } = require("electron");
+
+contextBridge.exposeInMainWorld("ideun", {
+  setOverlayClickThrough: (enabled) =>
+    ipcRenderer.send("overlay:setClickThrough", { enabled }),
+  focusSettings: () => ipcRenderer.send("settings:focus"),
+  openSettings: () => ipcRenderer.send("settings:open"),
+>>>>>>> 822c7754301e2b7d24d32487830561c1ef7cf660
 });

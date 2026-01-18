@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 // C:\Users\User\Downloads\ideun v1\src\shared\types\settings.ts
 
 // ✅ Added "pabo-normal-a"
@@ -34,3 +35,32 @@ export const DEFAULT_SETTINGS: IdeunSettings = {
 
   calibrateToken: 0,
 };
+=======
+export type IdeunCharacterId = "angel-normal-a";
+
+export type IdeunSettings = {
+  onboardingDone: boolean;
+  movementEnabled: boolean;
+  characterId: IdeunCharacterId;
+  overlayClickThrough: boolean;
+
+  // Reminder logic
+  remindAfterMs: number;
+
+  // ✅ Real blink tracking
+  cameraEnabled: boolean;
+  blinkClosedRatio: number; // lower = more sensitive (detects "closed" easier)
+};
+
+export const DEFAULT_SETTINGS: IdeunSettings = {
+  onboardingDone: false,
+  movementEnabled: true,
+  characterId: "angel-normal-a",
+  overlayClickThrough: true,
+
+  remindAfterMs: 8000,
+
+  cameraEnabled: true,
+  blinkClosedRatio: 0.68,
+};
+>>>>>>> 822c7754301e2b7d24d32487830561c1ef7cf660
